@@ -2,7 +2,7 @@ name: PayLink CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "**" ]
   pull_request:
     branches: [ "main" ]
 
@@ -29,3 +29,13 @@ jobs:
 
       - name: Build, Run Tests, and Check Code Style
         run: ./mvnw -B clean verify
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: target/surefire-reports
+
+      - name: Build Docker image
+        run: docker compose build

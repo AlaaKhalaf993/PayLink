@@ -209,6 +209,28 @@ Therefore, the system must provide accurate payment processing, reliable wallet 
 
 **Priority:** Must
 
+### 4.3 Non-Functional Requirements
+
+Each NFR has an ID, a numeric target, a measurement method, the tool or place where the number is produced, and the brief rule or hard case it comes from. In Phase 1 the targets and methods are fixed and the test plan is written. The measured numbers are reported in Phase 2 by the CI pipeline.
+
+|  ID   |   Quality   | Target (numeric) | How we measure | Evidence / where | Priority |
+|-------|-------------|------------------|----------------|------------------|----------|
+| NFR-1 | Correctness | **0** double charges and **0** negative balances across the duplicate-request and concurrency tests. Money uses exact decimal types, never float. | Hard case 1 (same payment sent twice with the same idempotency key): 1 payment row, 1 debit ledger entry. Hard case 4 (2 parallel payments, balance covers 1): exactly 1 `Completed`/`FundsHeld`, 1 `Rejected`. Run the concurrency test with 50 parallel requests per wallet, repeated 100 times. After each run assert `SUM(ledger) == wallet balance` and `balance >= 0`. Static check: a lint rule that fails the build if `float` or `double` is used for money. | Test report in CI (JUnit/Surefire XML), assertion counts in the PDF report | Must |
+| NFR-2 | Performance | **100 payments/second sustained for 60 seconds** against the mock billers, with **p95 latency <= 500 ms** and **error rate < 1%** (excluding payments rejected on purpose by business rules). Mock ElectroCo answers in under 1 s as the brief says. | Load test with k6: constant arrival rate of 100 req/s for 60 s on the `pay a bill` endpoint, using the ElectroCo mock. Read throughput, p95 and error rate from the k6 summary. Run on `docker compose up` locally. | k6 summary output saved as `/docs/perf/k6-summary.txt` | Must |
+| NFR-3 |  Resilience | When one biller is down, payments to the **other billers keep succeeding at >= 99%**, and the failing biller's payments become `Unknown` after the **10 s timeout** (money stays held), then are re-queried at **1, 5 and 15 minutes** (3 retries). | Integration test: mock AquaCo set to fail/hang (and ElectroCo with a 12 s delay, hard case 2). During the outage send 100 payments to ElectroCo and TopUpNet and assert >= 99 succeed. Assert the state is `Unknown`, the hold is not released, and 3 re-queries are scheduled at 1/5/15 min (use a fake clock). Notification down (hard case 5): payment is still `Completed`, SMS retried 3 times, then marked `undelivered`. | Integration test report in CI | Must |
+| NFR-4 | Modifiability | Adding a new biller changes **only the Biller Integration module + configuration**: **0 files** changed in Wallet, Payment Processing, Fees, Notifications, Fraud. Business-rule values (limits, fees, timeouts, retries, commission %) live in configuration: **0 hard-coded** occurrences. | Hard case 8: add a dummy biller in a branch and run `git diff --stat main`; a CI script fails if any path outside `integration/` and `config/` changed. Grep check for the rule values (5000, 30000, 2.50, 0.4, ...) in source outside config/tests. Phase 2: same check for ElectroCo API v2. | CI script output + diff stat in the report | Must |
+| NFR-5 | Auditability | **100%** of money movements and admin actions have an audit record with **who, when, why**. | Test: after each scenario (pay, fail + refund, top-up, commission, admin edits biller/fee/limit, block/unblock), compare the count of ledger entries + admin actions with the count of audit rows; they must be equal, and every row has non-null `actor`, `timestamp`, `reason`. SQL check: `SELECT count(*) FROM ledger_entry l LEFT JOIN audit_log a ON a.ref_id = l.id WHERE a.id IS NULL` must return **0**. | SQL check run in integration tests, result in the report | Must |
+| NFR-6 | Testability  | **>= 70% line coverage on domain logic**, reported by CI on every push. Also **100%** of the 8 hard cases (section 2.7 of the brief) have at least 1 automated test. | JaCoCo. Coverage gate in GitHub Actions: the build fails below 70% on the domain package. Hard-case traceability table: case # -> test name, checked in review. | Coverage report artifact in the GitHub Actions run | Must |
+
+#### NFR notes and decisions
+
+- The brief lists 6 expected qualities (Correctness, Performance, Resilience, Modifiability, Auditability, Testability). We use exactly these 6 so every NFR matches the brief's table; we only made each one more precise.
+- The brief says "100 payments per second sustained for 1 minute". Decision: we add p95 <= 500 ms and error rate < 1% so the test can pass or fail. These two numbers are our own decision, not from the brief (to be confirmed by the team).
+- The 99% in NFR-3 is our own decision, not from the brief. The 10 s timeout and the 1/5/15 min retries come from the business rules.
+- Performance is measured against mock billers on a laptop with docker compose, so the number depends on the machine. We write the CPU/RAM next to the result.
+- Phase 1 has no running payment system yet, so NFR numbers are measured in Phase 2. In Phase 1 we deliver the target, the method and the test plan.
+
+
 ## 5\. Questions and Ambiguities
 
 | ID | Question | Related Stories |

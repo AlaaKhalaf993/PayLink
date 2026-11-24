@@ -2,7 +2,7 @@ name: PayLink CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "**" ]
   pull_request:
     branches: [ "main" ]
 
@@ -24,8 +24,24 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      - name: Cache Maven wrapper
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/wrapper
+          key: maven-wrapper-${{ hashFiles('.mvn/wrapper/maven-wrapper.properties') }}
+
       - name: Make Maven Wrapper Executable
         run: chmod +x mvnw
 
       - name: Build, Run Tests, and Check Code Style
         run: ./mvnw -B clean verify
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: target/surefire-reports
+
+      - name: Build Docker image
+        run: docker compose build

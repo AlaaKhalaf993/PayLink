@@ -1,4 +1,3 @@
-
 name: PayLink CI
 
 on:
@@ -28,5 +27,5 @@ jobs:
       - name: Make Maven Wrapper Executable
         run: chmod +x mvnw
 
-      - name: Build and Run Tests
+      - name: Build, Run Tests, and Check Code Style
         run: ./mvnw -B clean verify

@@ -1,0 +1,383 @@
+@startuml
+hide circle
+skinparam linetype ortho
+skinparam shadowing false
+
+package "Accounts and Wallet" {
+  entity "accounts" as accounts {
+    * id : UUID <<PK>>
+    --
+    full_name : VARCHAR
+    mobile_number : VARCHAR (unique)
+    email : VARCHAR (unique)
+    password_hash : VARCHAR
+    role : VARCHAR (CUSTOMER | AGENT | ADMIN | SUPPORT)
+    verification_level : VARCHAR (BASIC | VERIFIED)
+    is_blocked : BOOLEAN
+    blocked_until : TIMESTAMP (null)
+    block_reason : VARCHAR
+    created_at : TIMESTAMP
+  }
+
+  entity "wallets" as wallets {
+    * id : UUID <<PK>>
+    --
+    account_id : UUID <<FK>> (null, unique)
+    wallet_type : VARCHAR (CUSTOMER | AGENT | SYSTEM)
+    currency : VARCHAR (always 'EGP')
+    created_at : TIMESTAMP
+  }
+
+  entity "ledger_entries" as ledger_entries {
+    * id : UUID <<PK>>
+    --
+    wallet_id : UUID <<FK>>
+    payment_id : UUID <<FK>> (null)
+    refund_request_id : UUID <<FK>> (null)
+    entry_type : VARCHAR (TOPUP | DEBIT | CREDIT | HOLD | HOLD_RELEASE | FEE_INCOME | COMMISSION | REVERSAL)
+    available_delta : NUMERIC(19,2)
+    held_delta : NUMERIC(19,2)
+    reverses_entry_id : UUID <<FK>> (null)
+    created_at : TIMESTAMP
+  }
+
+  entity "holds" as holds {
+    * id : UUID <<PK>>
+    --
+    wallet_id : UUID <<FK>>
+    payment_id : UUID <<FK>>
+    amount : NUMERIC(19,2)
+    status : VARCHAR (ACTIVE | RELEASED | CAPTURED)
+    created_at : TIMESTAMP
+    released_at : TIMESTAMP (null)
+  }
+
+  entity "top_ups" as top_ups {
+    * id : UUID <<PK>>
+    --
+    wallet_id : UUID <<FK>>
+    funding_source : VARCHAR (SIMULATED_CARD | AGENT_CASH)
+    amount : NUMERIC(19,2)
+    status : VARCHAR (PENDING | SUCCESS | FAILED)
+    ledger_entry_id : UUID <<FK>> (null)
+    created_at : TIMESTAMP
+  }
+}
+
+package "Biller Catalog" {
+  entity "billers" as billers {
+    * id : UUID <<PK>>
+    --
+    name : VARCHAR (ElectroCo, AquaCo, TopUpNet, NetCo)
+    category : VARCHAR (ELECTRICITY | WATER | MOBILE | INTERNET)
+    protocol : VARCHAR
+    is_active : BOOLEAN
+  }
+
+  entity "biller_services" as biller_services {
+    * id : UUID <<PK>>
+    --
+    biller_id : UUID <<FK>>
+    name : VARCHAR
+    min_amount : NUMERIC(19,2)
+    max_amount : NUMERIC(19,2)
+    is_active : BOOLEAN
+  }
+
+  entity "biller_required_fields" as biller_required_fields {
+    * id : UUID <<PK>>
+    --
+    biller_service_id : UUID <<FK>>
+    field_name : VARCHAR (meter_number, phone_number, ...)
+    field_type : VARCHAR
+    is_required : BOOLEAN
+  }
+}
+
+package "Payment Processing" {
+  entity "payments" as payments {
+    * id : UUID <<PK>>
+    --
+    reference : VARCHAR (unique)
+    customer_account_id : UUID <<FK>>
+    agent_account_id : UUID <<FK>> (null)
+    wallet_id : UUID <<FK>>
+    biller_service_id : UUID <<FK>>
+    biller_account_ref : VARCHAR (meter number or phone number)
+    idempotency_key : VARCHAR
+    amount : NUMERIC(19,2)
+    fee_amount : NUMERIC(19,2)
+    total_amount : NUMERIC(19,2)
+    status : VARCHAR (INITIATED | FUNDS_HELD | SENT_TO_BILLER | COMPLETED | FAILED | UNKNOWN | REJECTED | REFUNDED)
+    failure_reason : VARCHAR (null, set for REJECTED and FAILED)
+    created_at : TIMESTAMP
+    updated_at : TIMESTAMP
+  }
+
+  entity "payment_status_history" as payment_status_history {
+    * id : UUID <<PK>>
+    --
+    payment_id : UUID <<FK>>
+    from_status : VARCHAR
+    to_status : VARCHAR
+    changed_at : TIMESTAMP
+    note : VARCHAR
+  }
+
+  entity "idempotency_records" as idempotency_records {
+    * id : UUID <<PK>>
+    --
+    account_id : UUID <<FK>>
+    idempotency_key : VARCHAR
+    request_hash : VARCHAR
+    stored_response : VARCHAR
+    created_at : TIMESTAMP
+    expires_at : TIMESTAMP
+  }
+
+  entity "refund_requests" as refund_requests {
+    * id : UUID <<PK>>
+    --
+    payment_id : UUID <<FK>> (COMPLETED only)
+    requested_by_account_id : UUID <<FK>>
+    decided_by_account_id : UUID <<FK>> (null, SupportUser)
+    reason : VARCHAR
+    status : VARCHAR (PENDING | APPROVED | REJECTED)
+    decision_reason : VARCHAR (null)
+    created_at : TIMESTAMP
+    decided_at : TIMESTAMP (null)
+  }
+}
+
+package "Biller Integration" {
+  entity "biller_callbacks" as biller_callbacks {
+    * id : UUID <<PK>>
+    --
+    payment_id : UUID <<FK>>
+    biller_id : UUID <<FK>>
+    callback_status : VARCHAR (success | failed)
+    received_at : TIMESTAMP
+    is_duplicate : BOOLEAN
+  }
+
+  entity "requery_attempts" as requery_attempts {
+    * id : UUID <<PK>>
+    --
+    payment_id : UUID <<FK>>
+    attempt_no : INT (1..3, after 1, 5, 15 min)
+    result : VARCHAR
+    attempted_at : TIMESTAMP
+  }
+}
+
+package "Fees and Commissions" {
+  entity "fee_rules" as fee_rules {
+    * id : UUID <<PK>>
+    --
+    biller_id : UUID <<FK>>
+    fee_type : VARCHAR (FIXED | PERCENTAGE | TIERED)
+    fixed_amount : NUMERIC(19,2)
+    percentage : NUMERIC(19,2)
+    min_fee : NUMERIC(19,2)
+    tier_threshold : NUMERIC(19,2)
+    fee_below_threshold : NUMERIC(19,2)
+    fee_above_threshold : NUMERIC(19,2)
+    is_active : BOOLEAN
+    updated_by : UUID <<FK>>
+    updated_at : TIMESTAMP
+  }
+
+  entity "promotions" as promotions {
+    * id : UUID <<PK>>
+    --
+    biller_id : UUID <<FK>>
+    start_date : TIMESTAMP
+    end_date : TIMESTAMP
+    fee_override : NUMERIC(19,2) (default 0)
+  }
+
+  entity "commissions" as commissions {
+    * id : UUID <<PK>>
+    --
+    payment_id : UUID <<FK>> (unique)
+    agent_account_id : UUID <<FK>>
+    amount : NUMERIC(19,2) (40% of fee_amount)
+    ledger_entry_id : UUID <<FK>> (null)
+    created_at : TIMESTAMP
+  }
+}
+
+package "Fraud Checks" {
+  entity "limit_rules" as limit_rules {
+    * id : UUID <<PK>>
+    --
+    rule_name : VARCHAR (DAILY_BASIC | DAILY_VERIFIED | VELOCITY_COUNT | VELOCITY_WINDOW_SECONDS | VELOCITY_BLOCK_MINUTES)
+    value : NUMERIC(19,2)
+    updated_by : UUID <<FK>>
+    updated_at : TIMESTAMP
+  }
+}
+
+package "Notifications" {
+  entity "notifications" as notifications {
+    * id : UUID <<PK>>
+    --
+    account_id : UUID <<FK>>
+    payment_id : UUID <<FK>> (null)
+    channel : VARCHAR (SMS | PUSH | EMAIL)
+    message : VARCHAR
+    status : VARCHAR (PENDING | SENT | UNDELIVERED)
+    retry_count : INT (max 3)
+    last_attempt_at : TIMESTAMP
+    created_at : TIMESTAMP
+  }
+}
+
+package "Reconciliation" {
+  entity "settlement_files" as settlement_files {
+    * id : UUID <<PK>>
+    --
+    biller_id : UUID <<FK>>
+    file_date : TIMESTAMP
+    received_at : TIMESTAMP
+  }
+
+  entity "settlement_records" as settlement_records {
+    * id : UUID <<PK>>
+    --
+    settlement_file_id : UUID <<FK>>
+    payment_id : UUID <<FK>> (null)
+    biller_reference : VARCHAR
+    amount : NUMERIC(19,2)
+    biller_status : VARCHAR
+  }
+
+  entity "reconciliation_reports" as reconciliation_reports {
+    * id : UUID <<PK>>
+    --
+    settlement_file_id : UUID <<FK>>
+    report_date : TIMESTAMP
+    matched_count : INT
+    mismatch_count : INT
+    created_at : TIMESTAMP
+  }
+
+  entity "reconciliation_differences" as reconciliation_differences {
+    * id : UUID <<PK>>
+    --
+    reconciliation_report_id : UUID <<FK>>
+    settlement_record_id : UUID <<FK>> (null)
+    payment_id : UUID <<FK>> (null)
+    difference_type : VARCHAR (SETTLED_BUT_FAILED | UNKNOWN_NOT_IN_FILE | AMOUNT_MISMATCH)
+    flagged_for_review : BOOLEAN
+  }
+}
+
+package "Audit" {
+  entity "audit_logs" as audit_logs {
+    * id : UUID <<PK>>
+    --
+    actor_account_id : UUID <<FK>>
+    ledger_entry_id : UUID <<FK>> (null)
+    action : VARCHAR
+    entity_type : VARCHAR
+    entity_id : UUID
+    reason : VARCHAR
+    created_at : TIMESTAMP
+  }
+}
+
+' ---- Relationships ----
+
+accounts ||--o| wallets : owns
+wallets ||--o{ ledger_entries : records
+wallets ||--o{ top_ups : funds
+wallets ||--o{ holds : reserves
+payments ||--o{ holds : secures
+ledger_entries |o--o{ ledger_entries : reverses
+
+billers ||--|{ biller_services : offers
+biller_services ||--o{ biller_required_fields : requires
+
+accounts ||--o{ payments : initiates
+accounts |o--o{ payments : "pays on behalf"
+wallets ||--o{ payments : "pays from"
+biller_services ||--o{ payments : "billed as"
+payments ||--o{ payment_status_history : tracks
+payments ||--o{ ledger_entries : "moves money"
+payments ||--o{ biller_callbacks : receives
+payments ||--o{ requery_attempts : retries
+payments ||--o{ refund_requests : "refund of"
+refund_requests ||--o{ ledger_entries : reverses
+accounts ||--o{ refund_requests : requests
+accounts |o--o{ refund_requests : decides
+accounts ||--o{ idempotency_records : stores
+
+billers ||--o{ fee_rules : prices
+billers ||--o{ promotions : promotes
+accounts ||--o{ fee_rules : configures
+accounts ||--o{ limit_rules : configures
+payments ||--o| commissions : earns
+accounts ||--o{ commissions : "agent earns"
+ledger_entries |o--o{ commissions : "pays out"
+
+billers ||--o{ biller_callbacks : sends
+
+accounts ||--o{ notifications : "notified by"
+payments ||--o{ notifications : "about"
+
+billers ||--o{ settlement_files : settles
+settlement_files ||--o{ settlement_records : contains
+settlement_files ||--|| reconciliation_reports : "summarized by"
+reconciliation_reports ||--o{ reconciliation_differences : flags
+settlement_records |o--o{ reconciliation_differences : "differs on"
+payments |o--o{ settlement_records : "matched by"
+payments |o--o{ reconciliation_differences : "flagged in"
+
+accounts ||--o{ audit_logs : performs
+ledger_entries ||--o{ audit_logs : audits
+ledger_entries |o--o{ top_ups : "books"
+
+' ---- Notes ----
+
+note right of wallets
+  Balances are computed, never stored (US-05.2):
+  availableBalance = sum of ledger_entries.available_delta,
+  heldBalance = sum of ledger_entries.held_delta.
+  The holds table records each hold and its status;
+  it is not used to compute the balance.
+  One internal SYSTEM wallet (wallet_type = SYSTEM)
+  holds PayLink fee income and pays refunds (D-18).
+end note
+
+note bottom of ledger_entries
+  append-only: never updated or deleted.
+  available_delta and held_delta give the direction of each movement;
+  balance = sum of the deltas (NFR-01).
+end note
+
+note right of limit_rules
+  Min and max payment amount are NOT here:
+  they are stored once in biller_services.min_amount
+  and biller_services.max_amount (US-06, US-09.4).
+end note
+
+note right of refund_requests
+  Refund of a COMPLETED payment returns the FULL
+  total_amount (bill + fee) to the customer via
+  reversing ledger_entries (REVERSAL + reverses_entry_id),
+  also reversing fee income and agent commission;
+  PayLink absorbs any commission shortfall (D-13, D-14).
+  Paid from the SYSTEM wallet (D-18).
+  The payment itself stays COMPLETED.
+end note
+
+note bottom of audit_logs
+  append-only (D-17): no UPDATE/DELETE endpoints,
+  enforced in code (insert and read only), plus DB-level
+  hardening as a deployment rule: revoke UPDATE and DELETE
+  on audit_logs for the application user (US-25.2).
+  Every ledger entry and every admin action is audited.
+end note
+
+@enduml

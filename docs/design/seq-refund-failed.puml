@@ -1,0 +1,94 @@
+@startuml
+title PayLink - Refund a failed payment (FAILED -> REFUNDED)
+' Names follow docs/design/glossary.md, architecture.md (section 4.1) and class-diagram.puml.
+' Only the transitions of brief 2.5 are used: SENT_TO_BILLER -> FAILED, UNKNOWN -> FAILED, FAILED -> REFUNDED.
+' Four ways to FAILED: biller refuses, later refusal, reconciliation, support confirms by hand (UC16).
+' This diagram is for a FAILED payment. A refund after COMPLETED (FR-27) is a separate reversal: see seq-refund-completed.puml.
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+autonumber
+
+actor "SupportUser" as Sup
+participant "BillerAdapter" as Ad
+participant "RetryCommand" as Retry
+participant "ReconciliationService" as Rec
+participant "PaymentService" as PS
+participant "WalletService" as Wal
+participant "NotificationObserver" as Notif
+
+== 1. The payment becomes FAILED (four ways) ==
+alt biller refuses (SENT_TO_BILLER -> FAILED, hard case 3)
+  Ad -> PS : BillerOutcome REFUSED (error code)
+  PS -> PS : status FAILED, reason = biller error code
+else UNKNOWN payment: biller later refuses (UNKNOWN -> FAILED)
+  Retry -> Ad : re-query after 1, 5 or 15 minutes
+  Ad --> Retry : BillerOutcome REFUSED
+  Retry -> PS : onBillerResult(reference, REFUSED)
+  note right of PS
+    A TopUpNet callback reaches `payments`
+    through the same BillerCallbackListener.
+  end note
+  PS -> PS : status FAILED, reason = biller refused
+else UNKNOWN payment: reconciliation finds no payment (UNKNOWN -> FAILED)
+  Rec -> PS : payment is not in the settlement file
+  PS -> PS : status FAILED, reason = not received by biller
+else UNKNOWN payment: Support confirms the biller refused (UNKNOWN -> FAILED, UC16)
+  Sup -> PS : resolveUnknown(paymentId, REFUSED)
+  PS -> PS : status FAILED, reason = confirmed by support
+  PS -> PS : AuditLog entry (who, when, why)
+  note right of PS
+    resolveUnknown works only on an UNKNOWN payment.
+    With CONFIRMED the payment becomes COMPLETED instead
+    (see the pay-a-bill diagram).
+  end note
+end
+PS -> PS : write PaymentStatusHistory
+
+== 2. Refund: hold released to the wallet (FAILED -> REFUNDED) ==
+PS -> PS : refund(paymentId): find(paymentId)
+alt status is not FAILED
+  PS --> PS : refused, no money moves
+  note right of PS
+    UNKNOWN is never refunded automatically:
+    money returns only once the system is sure
+    the biller did not receive it.
+    COMPLETED, REJECTED and REFUNDED are final.
+  end note
+else status is FAILED
+  PS -> Wal : releaseHold(HoldId)
+  alt hold already RELEASED (second request)
+    Wal --> PS : nothing changed
+    note right of Wal
+      Releasing twice never credits twice
+      (same idea as the idempotency key).
+    end note
+  else hold is ACTIVE
+    Wal -> Wal : LedgerEntry HOLD_RELEASE\n(heldDelta = -total, availableDelta = +total)
+    Wal -> Wal : Hold status RELEASED, AuditLog entry (who, when, why)
+    note right of Wal
+      The whole total comes back, including the fee:
+      the fee was only held, never earned.
+      No FEE_INCOME and no COMMISSION are posted.
+    end note
+    Wal --> PS : held -> available
+    PS -> PS : status REFUNDED
+    PS -> PS : write PaymentStatusHistory
+  end
+end
+
+== 3. Notification (does not change the result, hard case 5) ==
+PS ->> Notif : onPaymentEvent(PaymentEvent FAILED, then REFUNDED)
+note right of Notif
+  SMS and push with the clear reason (FR-22).
+  A failed send is retried 3 times, then marked UNDELIVERED.
+end note
+
+== Related: settlement file lists a payment PayLink has as FAILED (hard case 7) ==
+Rec -> Rec : ReconciliationDifference SETTLED_BUT_FAILED
+note over Rec, PS
+  Flagged in the ReconciliationReport for support to review.
+  The system does not change the payment or the wallet by itself.
+end note
+@enduml

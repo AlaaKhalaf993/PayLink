@@ -1,0 +1,522 @@
+@startuml
+title PayLink - Domain Class Diagram
+' Names follow docs/design/glossary.md and docs/design/architecture.md
+' Money is always Money (BigDecimal, EGP). No float or double anywhere.
+' Customer, Agent, AdminUser, SupportUser are roles of Account (Role enum), not subclasses.
+' SYSTEM is a wallet type (PayLink's own wallet, no account), not a role (decision D-18).
+' AuditLog is append-only: no update, no delete (decision D-17, US-25.2).
+' Min and max amount of a payment are stored once, in BillerService (minAmount, maxAmount); MinMaxRule reads them (US-06, US-09.4).
+' Refund after COMPLETED (FR-27): RefundRequest + REVERSAL ledger entries, the payment stays COMPLETED (D-12).
+
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 35
+skinparam ranksep 90
+skinparam packageStyle rectangle
+skinparam wrapWidth 300
+skinparam shadowing false
+skinparam roundcorner 6
+skinparam ArrowColor #333333
+skinparam ClassBorderColor #555555
+skinparam ClassBackgroundColor #FFFFFF
+hide empty members
+
+package "shared" {
+  class Money <<value>> {
+    amount : BigDecimal
+    currency : String = "EGP"
+  }
+  class Balances <<value>> {
+    available : Money
+    held : Money
+  }
+  class AuditLog <<append-only>> {
+    id : UUID
+    actor : AccountId
+    action : String
+    reason : String
+    refId : UUID
+    createdAt : Instant
+  }
+}
+
+package "accounts" {
+  class Account {
+    id : AccountId
+    fullName : String
+    mobileNumber : String
+    email : String
+    passwordHash : String
+    role : Role
+    verificationLevel : VerificationLevel
+    blocked : boolean
+    blockedUntil : Instant
+    blockReason : String
+    createdAt : Instant
+  }
+  class Wallet {
+    id : WalletId
+    walletType : WalletType
+    currency : String = "EGP"
+    availableBalance() : Money
+    heldBalance() : Money
+  }
+  class LedgerEntry {
+    id : UUID
+    type : LedgerEntryType
+    availableDelta : Money
+    heldDelta : Money
+    createdAt : Instant
+  }
+  class Hold {
+    id : HoldId
+    amount : Money
+    status : HoldStatus
+    createdAt : Instant
+    releasedAt : Instant
+  }
+  class TopUp {
+    id : UUID
+    fundingSource : FundingSource
+    amount : Money
+    status : TopUpStatus
+    createdAt : Instant
+  }
+  enum TopUpStatus {
+    PENDING
+    SUCCESS
+    FAILED
+  }
+  enum FundingSource {
+    SIMULATED_CARD
+    AGENT_CASH
+  }
+  enum Role {
+    CUSTOMER
+    AGENT
+    ADMIN
+    SUPPORT
+  }
+  enum WalletType {
+    CUSTOMER
+    AGENT
+    SYSTEM
+  }
+  enum VerificationLevel {
+    BASIC
+    VERIFIED
+  }
+  enum LedgerEntryType {
+    TOPUP
+    CREDIT
+    HOLD
+    HOLD_RELEASE
+    DEBIT
+    FEE_INCOME
+    COMMISSION
+    REVERSAL
+  }
+  enum HoldStatus {
+    ACTIVE
+    CAPTURED
+    RELEASED
+  }
+  interface WalletService {
+    balances(id) : Balances
+    topUp(id, source, amount) : TopUpId
+    history(id) : List<LedgerEntry>
+    placeHold(id, p, total) : HoldId
+    captureHold(h)
+    releaseHold(h)
+    reverseCompleted(p, requestId, actor)
+  }
+  interface AccountService {
+    register(info) : AccountId
+    upgrade(id, level)
+    levelOf(id) : VerificationLevel
+    isBlocked(id) : boolean
+    block(id, until, reason)
+    unblock(id)
+  }
+}
+
+package "catalog" {
+  class Biller {
+    id : BillerId
+    name : String
+    protocol : BillerProtocol
+    category : BillerCategory
+    active : boolean
+  }
+  enum BillerCategory {
+    ELECTRICITY
+    WATER
+    MOBILE
+    INTERNET
+  }
+  class BillerService {
+    id : ServiceId
+    name : String
+    requiredFields : List<String>
+    minAmount : Money
+    maxAmount : Money
+    active : boolean
+  }
+  enum BillerProtocol {
+    REST_JSON
+    SOAP_XML
+    REST_ASYNC
+    CSV_FILE
+  }
+  interface BillerCatalog {
+    service(id) : BillerServiceInfo
+    manage(biller, service, actor)
+  }
+}
+
+package "fees" {
+  class FeeRule {
+    id : UUID
+    type : FeeType
+    fixedAmount : Money
+    percentage : BigDecimal
+    minimumFee : Money
+    tierThreshold : Money
+    feeBelowThreshold : Money
+    feeAboveThreshold : Money
+    active : boolean
+    updatedBy : AccountId
+    updatedAt : Instant
+  }
+  class Promotion {
+    startDate : LocalDate
+    endDate : LocalDate
+    feeOverride : Money
+  }
+  class Commission {
+    id : UUID
+    amount : Money
+    createdAt : Instant
+  }
+  enum FeeType {
+    FIXED
+    PERCENTAGE
+    TIERED
+  }
+  interface FeeStrategy <<Strategy>> {
+    feeFor(amount) : Money
+  }
+  class FeeCalculator {
+    feeFor(s, amount, day) : Money
+  }
+  class CommissionCalculator {
+    commission(fee, agent) : Money
+  }
+  interface FeeRuleAdmin {
+    updateRule(rule, actor)
+  }
+  class FixedFee
+  class PercentageFee
+  class TieredFee
+}
+
+package "fraud" {
+  class LimitRule {
+    id : UUID
+    ruleName : LimitRuleName
+    value : BigDecimal
+    updatedBy : AccountId
+    updatedAt : Instant
+  }
+  enum LimitRuleName {
+    DAILY_BASIC
+    DAILY_VERIFIED
+    VELOCITY_COUNT
+    VELOCITY_WINDOW_SECONDS
+    VELOCITY_BLOCK_MINUTES
+  }
+  class FraudDecision <<value>> {
+    allowed : boolean
+    reason : String
+  }
+  interface FraudRule <<Chain of Responsibility>> {
+    check(ctx) : FraudDecision
+  }
+  class FraudChecker {
+    check(ctx) : FraudDecision
+  }
+  class DailyLimitRule
+  class VelocityRule
+  class BlockedAccountRule
+  class MinMaxRule
+  interface LimitRuleAdmin {
+    updateRule(rule, actor)
+  }
+}
+
+package "payments" {
+  class Payment {
+    id : PaymentId
+    reference : String
+    idempotencyKey : String
+    billerAccountRef : String
+    amount : Money
+    feeAmount : Money
+    totalAmount : Money
+    status : PaymentStatus
+    failureReason : String
+  }
+  class PaymentStatusHistory {
+    fromStatus : PaymentStatus
+    toStatus : PaymentStatus
+    reason : String
+    changedAt : Instant
+  }
+  class IdempotencyRecord {
+    idempotencyKey : String
+    requestHash : String
+    storedResponse : String
+  }
+  class PaymentEvent <<event>> {
+    paymentId : PaymentId
+    newStatus : PaymentStatus
+    occurredAt : Instant
+  }
+  class RefundRequest {
+    id : UUID
+    reason : String
+    status : RefundRequestStatus
+    decisionReason : String
+    createdAt : Instant
+    decidedAt : Instant
+  }
+  enum RefundRequestStatus {
+    PENDING
+    APPROVED
+    REJECTED
+  }
+  enum PaymentStatus {
+    INITIATED
+    FUNDS_HELD
+    SENT_TO_BILLER
+    COMPLETED
+    FAILED
+    UNKNOWN
+    REJECTED
+    REFUNDED
+  }
+  interface PaymentState <<State>> {
+    next(event) : PaymentState
+  }
+  class InitiatedState
+  class FundsHeldState
+  class SentToBillerState
+  class CompletedState
+  class FailedState
+  class UnknownState
+  class RejectedState
+  class RefundedState
+  interface RetryCommand <<Command>> {
+    execute()
+  }
+  interface PaymentService {
+    pay(cmd) : PaymentResult
+    find(id) : Payment
+    findByReference(ref) : Payment
+    dailyTotals(day) : DailyTotals
+    refund(id)
+    resolveUnknown(id, outcome, actor)
+    requestRefund(id, customer, reason) : requestId
+    approveRefund(requestId, actor, reason)
+    rejectRefund(requestId, actor, reason)
+  }
+}
+
+package "billers" {
+  enum BillerOutcome {
+    CONFIRMED
+    REFUSED
+    PENDING
+    UNKNOWN
+  }
+  class BillerCallback {
+    id : UUID
+    status : CallbackStatus
+    receivedAt : Instant
+    duplicate : boolean
+  }
+  enum CallbackStatus {
+    SUCCESS
+    FAILED
+  }
+  class RequeryAttempt {
+    id : UUID
+    attemptNo : int
+    result : BillerOutcome
+    attemptedAt : Instant
+  }
+  interface BillerAdapter <<Adapter>> {
+    inquire(q) : BillInfo
+    pay(p) : BillerOutcome
+  }
+  class BillerAdapters <<Factory>> {
+    forBiller(id) : BillerAdapter
+  }
+  interface BillerCallbackListener {
+    onBillerResult(r, o)
+  }
+  class ElectroCoAdapter
+  class AquaCoAdapter
+  class TopUpNetAdapter
+  class NetCoAdapter
+}
+
+package "notifications" {
+  class Notification {
+    id : UUID
+    channel : NotificationChannel
+    status : NotificationStatus
+    attempts : int
+    message : String
+  }
+  enum NotificationChannel {
+    SMS
+    EMAIL
+    PUSH
+  }
+  enum NotificationStatus {
+    PENDING
+    SENT
+    UNDELIVERED
+  }
+  interface NotificationObserver <<Observer>> {
+    onPaymentEvent(e)
+  }
+  class SmsObserver
+  class EmailObserver
+  class PushObserver
+}
+
+package "reconciliation" {
+  class SettlementFile {
+    id : UUID
+    fileDate : LocalDate
+    receivedAt : Instant
+  }
+  class SettlementRecord {
+    billerReference : String
+    amount : Money
+    billerStatus : String
+  }
+  class ReconciliationReport {
+    id : UUID
+    runDate : LocalDate
+  }
+  class ReconciliationDifference {
+    kind : DifferenceKind
+    note : String
+  }
+  enum DifferenceKind {
+    SETTLED_BUT_FAILED
+    UNKNOWN_NOT_IN_FILE
+    AMOUNT_MISMATCH
+  }
+  interface ReconciliationService {
+    reconcile(b, file) : ReconciliationReport
+  }
+}
+
+' ---- data relationships ----
+Account "0..1" -- "0..1" Wallet : owns
+Wallet "1" *-- "0..*" LedgerEntry
+Wallet "1" *-- "0..*" Hold
+Account "1" -- "0..*" Payment : pays
+Account "0..1" -- "0..*" Payment : agent
+Account "1" -- "0..*" Commission : earns
+Account "1" -- "0..*" Notification : receives
+
+Biller "1" *-- "1..*" BillerService
+BillerService "1" -- "0..*" Payment
+Biller "1" -- "0..*" FeeRule
+Biller "1" -- "0..*" Promotion
+
+Payment "1" *-- "1..*" PaymentStatusHistory
+Payment "1" -- "0..1" Hold
+Payment "1" -- "0..1" IdempotencyRecord
+Payment "1" -- "0..1" Commission
+Payment "1" -- "0..*" LedgerEntry
+Payment "1" -- "0..*" Notification
+Payment ..> PaymentEvent : publishes
+
+ReconciliationReport "1" *-- "0..*" ReconciliationDifference
+ReconciliationDifference "0..*" -- "0..1" Payment
+ReconciliationDifference "0..*" -- "0..1" SettlementRecord
+Biller "1" -- "0..*" SettlementFile : settles
+SettlementFile "1" *-- "0..*" SettlementRecord : contains
+SettlementFile "1" -- "1" ReconciliationReport : summarized by
+SettlementRecord "0..*" -- "0..1" Payment : matched by
+
+' ---- top-ups, refund requests, callbacks, re-queries ----
+Wallet "1" *-- "0..*" TopUp
+TopUp "0..*" -- "0..1" LedgerEntry : books
+Payment "1" -- "0..*" RefundRequest : refund of
+Account "1" -- "0..*" RefundRequest : requests
+Account "0..1" -- "0..*" RefundRequest : decides
+RefundRequest "0..1" -- "0..*" LedgerEntry : reverses via
+Payment "1" -- "0..*" BillerCallback : receives
+Biller "1" -- "0..*" BillerCallback : sends
+Payment "1" -- "0..*" RequeryAttempt : retries
+
+' ---- patterns ----
+PaymentState <|.. InitiatedState
+PaymentState <|.. FundsHeldState
+PaymentState <|.. SentToBillerState
+PaymentState <|.. CompletedState
+PaymentState <|.. FailedState
+PaymentState <|.. UnknownState
+PaymentState <|.. RejectedState
+PaymentState <|.. RefundedState
+Payment "1" o-- "1" PaymentState : current
+
+FeeStrategy <|.. FixedFee
+FeeStrategy <|.. PercentageFee
+FeeStrategy <|.. TieredFee
+FeeCalculator ..> FeeStrategy
+
+FraudRule <|.. DailyLimitRule
+FraudRule <|.. VelocityRule
+FraudRule <|.. BlockedAccountRule
+FraudRule <|.. MinMaxRule
+FraudChecker o-- "1..*" FraudRule
+FraudChecker ..> FraudDecision
+DailyLimitRule ..> LimitRule : reads
+VelocityRule ..> LimitRule : reads
+VelocityRule ..> AccountService : block
+BlockedAccountRule ..> AccountService : isBlocked
+MinMaxRule ..> BillerService : reads min/max
+
+BillerAdapter <|.. ElectroCoAdapter
+BillerAdapter <|.. AquaCoAdapter
+BillerAdapter <|.. TopUpNetAdapter
+BillerAdapter <|.. NetCoAdapter
+BillerAdapters ..> BillerAdapter : creates
+
+NotificationObserver <|.. SmsObserver
+NotificationObserver <|.. EmailObserver
+NotificationObserver <|.. PushObserver
+PaymentEvent ..> NotificationObserver : notifies
+
+PaymentService ..> PaymentState
+PaymentService ..> RetryCommand
+PaymentService ..|> BillerCallbackListener
+
+' ---- layout hints only (no meaning, not drawn) ----
+Account -[hidden]right-> Payment
+Payment -[hidden]right-> BillerCallback
+Payment -[hidden]right-> Notification
+Payment -[hidden]right-> Commission
+Biller -[hidden]right-> Payment
+SettlementRecord -[hidden]right-> Payment
+Wallet -[hidden]down-> Biller
+
+@enduml

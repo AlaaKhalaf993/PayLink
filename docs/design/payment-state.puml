@@ -1,0 +1,39 @@
+@startuml payment-state
+title PayLink - Payment Life Cycle (brief section 2.5)
+skinparam dpi 200
+
+' Source of truth for names: docs/design/glossary.md
+' Only the 9 transitions of the brief are allowed. Final states: COMPLETED, REJECTED, REFUNDED.
+
+[*] --> INITIATED
+
+INITIATED --> FUNDS_HELD : fraud checks pass\nand wallet has enough funds
+INITIATED --> REJECTED : fraud check fails\nor funds are insufficient
+
+FUNDS_HELD --> SENT_TO_BILLER : request sent to biller
+
+SENT_TO_BILLER --> COMPLETED : biller confirms
+SENT_TO_BILLER --> FAILED : biller refuses
+SENT_TO_BILLER --> UNKNOWN : no answer within timeout\n(10 s for live billers)
+
+UNKNOWN --> COMPLETED : biller later confirms\n(callback, retry or settlement file)
+UNKNOWN --> FAILED : biller later refuses, or\nreconciliation finds no payment
+
+FAILED --> REFUNDED : hold released to the wallet
+
+COMPLETED --> [*]
+REJECTED --> [*]
+REFUNDED --> [*]
+
+note right of UNKNOWN
+  Never refunded automatically.
+  Money is returned only once the system
+  is sure the biller did not receive it.
+end note
+
+note bottom of FUNDS_HELD
+  Money is moved from available balance
+  to held balance (not spent yet).
+end note
+
+@enduml

@@ -1,0 +1,147 @@
+@startuml
+title PayLink - Pay a bill (brief section 2.2, answers per architecture.md 4.1)
+' Names follow docs/design/glossary.md and docs/design/architecture.md.
+' Only `payments` orchestrates. Payment states are written in UPPER_CASE as in the state diagram.
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+autonumber
+
+actor "Customer / Agent" as Client
+participant "PaymentService" as PS
+participant "BillerCatalog" as Cat
+participant "BillerAdapters" as BA
+participant "BillerAdapter" as Ad
+participant "FeeCalculator" as Fee
+participant "FraudChecker" as Fraud
+participant "WalletService" as Wal
+participant "NotificationObserver" as Notif
+participant "Biller (mock)" as Biller
+
+== Bill inquiry (FR-8) ==
+Client -> PS : inquire(serviceId, billerAccountRef)
+PS -> Cat : service(serviceId)
+Cat --> PS : limits, required fields, active
+PS -> BA : forBiller(billerId)
+BA --> PS : BillerAdapter
+PS -> Ad : inquire(BillInquiry)
+Ad -> Biller : bill request (protocol of that biller)
+alt bill found
+  Biller --> Ad : amount due
+  Ad --> PS : BillInfo
+  PS -> Fee : feeFor(serviceId, amount, today)
+  Fee --> PS : fee (0 during a promotion)
+  PS --> Client : amount + fee = total
+else account or number not found at the biller (US-08)
+  Biller --> Ad : not found
+  Ad --> PS : not found
+  PS --> Client : not-found message, payment cannot be started
+else no answer within 10 s (US-08)
+  Ad --> PS : timeout
+  PS --> Client : try again later, no money is taken
+end
+
+== Pay ==
+Client -> PS : pay(PayCommand with idempotencyKey)
+note over Client, PS
+  If an agent pays, the customer's wallet is charged and the
+  agent id is stored on the Payment (decision D-10).
+end note
+alt same idempotencyKey and same data (hard case 1)
+  PS --> Client : the first result, no new charge
+else same idempotencyKey but different data (US-10)
+  PS --> Client : rejected as a conflict
+else new request
+  PS -> PS : create Payment, status INITIATED\nsave IdempotencyRecord (key + requestHash), write history
+  PS -> Cat : service(serviceId)
+  Cat --> PS : min and max amount of this service\n(biller_services, for example 5 / 10,000 EGP)
+  PS -> Fraud : check(FraudContext)
+  note right of Fraud
+    Rules in the chain: BlockedAccountRule, DailyLimitRule
+    (5,000 basic / 30,000 verified, counted on the total, US-09),
+    VelocityRule, MinMaxRule (amount below min or above max, US-09.4)
+  end note
+  Fraud --> PS : FraudDecision
+
+  alt amount below the minimum or above the maximum (MinMaxRule, US-09.4, US-18.1, D-07)
+    PS -> PS : status REJECTED (failureReason = amount out of range)
+    PS --> Client : rejected: amount must be between min and max, no money moves
+  else another rule says no (blocked account, daily limit, velocity)
+    PS -> PS : status REJECTED
+    PS --> Client : rejected with a clear reason (FR-18)
+  else allowed
+    PS -> Wal : placeHold(accountId, paymentId, total)
+    note right of Wal
+      Only `accounts` writes the ledger.
+      Locking: two payments at the same moment
+      cannot both use the same money (hard case 4).
+    end note
+    alt not enough available balance
+      Wal --> PS : insufficient funds
+      PS -> PS : status REJECTED
+      PS --> Client : rejected, balance unchanged
+    else hold placed
+      Wal --> PS : HoldId (available -> held)
+      PS -> PS : status FUNDS_HELD
+      PS -> PS : status SENT_TO_BILLER
+      PS -> Ad : pay(BillerPayment with unique reference)
+      Ad -> Biller : payment request
+      note right of Biller
+        Timeout: 10 s for live billers.
+        AquaCo 2-4 s, TopUpNet answers "accepted" first.
+      end note
+
+      alt CONFIRMED (ElectroCo, AquaCo)
+        Biller --> Ad : paid
+        Ad --> PS : BillerOutcome CONFIRMED
+        PS -> Wal : captureHold(HoldId)
+        note right of Wal
+          Ledger entries: DEBIT, FEE_INCOME and,
+          if an agent was involved, COMMISSION (40% of the fee).
+        end note
+        PS -> PS : status COMPLETED
+        PS --> Client : success + reference
+      else REFUSED (AquaCo error code, hard case 3)
+        Biller --> Ad : refused + error code
+        Ad --> PS : BillerOutcome REFUSED
+        PS -> PS : status FAILED
+        PS -> Wal : releaseHold(HoldId)
+        Wal --> PS : held -> available
+        PS -> PS : status REFUNDED
+        PS --> Client : failed with a clear reason
+      else PENDING (TopUpNet "accepted")
+        Biller --> Ad : accepted
+        Ad --> PS : BillerOutcome PENDING
+        PS --> Client : being processed, status stays SENT_TO_BILLER, hold stays
+        note over PS, Biller
+          Later: the TopUpNet callback reaches `billers`, which calls
+          BillerCallbackListener.onBillerResult(reference, outcome) on `payments`.
+          Same handling as CONFIRMED or REFUSED above.
+          A second callback with the same result is ignored and logged (hard case 6).
+        end note
+      else UNKNOWN (no answer within 10 s, hard case 2)
+        Ad --> PS : BillerOutcome UNKNOWN
+        PS -> PS : status UNKNOWN
+        PS --> Client : being processed, hold stays
+        note over PS, Biller
+          Never refunded automatically.
+          RetryCommand re-queries after 1, 5 and 15 minutes.
+          Then it waits for reconciliation (settlement file).
+          Later result: UNKNOWN -> COMPLETED or UNKNOWN -> FAILED.
+          A SupportUser can also confirm the outcome by hand:
+          resolveUnknown(paymentId, outcome, actor) (UC16, audited).
+        end note
+      end
+    end
+  end
+end
+
+== Notification (does not block the payment, hard case 5) ==
+PS ->> Notif : onPaymentEvent(PaymentEvent) after every state change
+note right of Notif
+  SMS, push and email observers send the message.
+  A failed send is retried 3 times, then marked UNDELIVERED.
+  The payment result does not change.
+end note
+@enduml

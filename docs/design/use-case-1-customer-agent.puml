@@ -1,0 +1,43 @@
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam dpi 200
+skinparam ranksep 60
+skinparam nodesep 25
+skinparam usecase {
+ BackgroundColor #F5F9FF
+ BorderColor #4A6FA5
+}
+skinparam ArrowColor #444444
+
+title PayLink - Use Cases 1/3: Customer and Agent
+actor "Customer" as customer
+actor "Agent" as agent
+rectangle "PayLink System" {
+  usecase "Register Account" as UC1
+  usecase "Upgrade Verification\nBASIC to VERIFIED" as UC2
+  usecase "View Wallet Balance\nand History" as UC3
+  usecase "Top Up Wallet" as UC4
+  usecase "Browse Billers and\nRequired Fields" as UC5
+  usecase "Bill Inquiry" as UC6
+  usecase "Pay a Bill" as UC7
+  usecase "Request Refund of\nCompleted Payment" as UC8
+  usecase "Pay Bill on Behalf\nof Customer" as UC9
+  note bottom of UC8
+    RefundRequest + reversing LedgerEntries,
+    paid from the SYSTEM Wallet (D-12, D-13, D-14, D-18)
+  end note
+}
+customer --> UC1
+customer --> UC2
+customer --> UC3
+customer --> UC4
+customer --> UC5
+customer --> UC6
+customer --> UC7
+customer --> UC8
+agent --> UC9
+agent --> UC4
+agent --> UC3
+UC9 .> UC7 : <<extend>>
+@enduml

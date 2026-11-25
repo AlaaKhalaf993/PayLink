@@ -1,0 +1,71 @@
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam dpi 200
+skinparam ranksep 60
+skinparam nodesep 25
+skinparam usecase {
+ BackgroundColor #F5F9FF
+ BorderColor #4A6FA5
+}
+skinparam ArrowColor #444444
+
+title PayLink - Use Cases 3/3: Inside "Pay a Bill"
+actor "ElectroCo" as electroco
+actor "AquaCo" as aquaco
+actor "TopUpNet" as topupnet
+actor "NetCo" as netco
+actor "SMS/Push/Email Provider" as smspush
+rectangle "PayLink System" {
+  usecase "Pay a Bill" as UC7
+  usecase "Bill Inquiry" as UC6
+  usecase "Prevent Duplicate Payment\nusing idempotencyKey" as UC25
+  usecase "Check Daily Limit" as UC20
+  usecase "Check Velocity Rule" as UC21
+  usecase "Check Blocked Account" as UC22
+  usecase "Check Min and Max Amount" as UC33
+  usecase "Calculate Fee" as UC23
+  usecase "Hold Funds" as UC24
+  usecase "Send Payment to Biller" as UC26
+  usecase "Record Ledger Entry" as UC29
+  usecase "Write Audit Log" as UC30
+  usecase "Send Notification\nwith Retry" as UC31
+  usecase "Re-query UNKNOWN Payment" as UC27
+  usecase "Receive Biller Callback\nand Ignore Duplicates" as UC28
+  note bottom of UC21
+    The four checks are FraudRule classes in a chain.
+    Daily and velocity numbers come from LimitRule (D-15);
+    min and max come from the biller service (US-06)
+  end note
+  note bottom of UC27
+    no answer within 10 seconds: re-query after 1, 5 and 15 minutes (D-11)
+  end note
+  note bottom of UC28
+    only TopUpNet replies "accepted" first;
+    a duplicate success callback is ignored and logged
+  end note
+}
+UC7 ..> UC6 : <<include>>
+UC7 ..> UC25 : <<include>>
+UC7 ..> UC20 : <<include>>
+UC7 ..> UC21 : <<include>>
+UC7 ..> UC22 : <<include>>
+UC7 ..> UC33 : <<include>>
+UC7 ..> UC23 : <<include>>
+UC7 ..> UC24 : <<include>>
+UC7 ..> UC26 : <<include>>
+UC7 ..> UC29 : <<include>>
+UC7 ..> UC31 : <<include>>
+UC24 ..> UC29 : <<include>>
+UC29 ..> UC30 : <<include>>
+UC27 ..> UC26 : <<extend>>
+UC28 ..> UC26 : <<extend>>
+UC26 -- electroco
+UC26 -- aquaco
+UC26 -- topupnet
+UC26 -- netco
+UC6 -- electroco
+UC6 -- aquaco
+UC6 -- topupnet
+UC31 -- smspush
+@enduml

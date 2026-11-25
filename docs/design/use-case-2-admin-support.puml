@@ -1,0 +1,63 @@
+@startuml
+left to right direction
+skinparam shadowing false
+skinparam dpi 200
+skinparam ranksep 60
+skinparam nodesep 25
+skinparam usecase {
+ BackgroundColor #F5F9FF
+ BorderColor #4A6FA5
+}
+skinparam ArrowColor #444444
+
+title PayLink - Use Cases 2/3: Admin, Support and Management
+actor "AdminUser" as admin
+actor "SupportUser" as support
+actor "PayLink Management" as mgmt
+actor "ElectroCo" as electroco
+actor "AquaCo" as aquaco
+actor "TopUpNet" as topupnet
+actor "NetCo" as netco
+rectangle "PayLink System" {
+  usecase "Manage Billers\nand Services" as UC10
+  usecase "Edit Fees and Limits" as UC11
+  usecase "View Admin Daily Totals" as UC12
+  usecase "Search Payment by Reference\nand View History" as UC13
+  usecase "Block and Unblock Account" as UC14
+  usecase "Approve or Reject\nRefund Request" as UC15
+  usecase "Follow Up UNKNOWN\nPayment Manually" as UC16
+  usecase "Review Reconciliation Report" as UC17
+  usecase "Run Reconciliation with\nSettlement File" as UC32
+  usecase "View Audit Log" as UC18
+  usecase "Monitor Ledger Entries" as UC19
+  usecase "Record Ledger Entry" as UC29
+  usecase "Write Audit Log" as UC30
+  note bottom of UC15
+    RefundRequest starts PENDING;
+    the payment stays COMPLETED (D-12)
+  end note
+}
+admin --> UC10
+admin --> UC11
+admin --> UC12
+support --> UC13
+support --> UC14
+support --> UC15
+support --> UC16
+support --> UC17
+mgmt --> UC18
+mgmt --> UC19
+UC17 ..> UC32 : <<include>>
+UC15 ..> UC29 : <<include>>
+UC16 ..> UC29 : <<include>>
+UC16 ..> UC30 : <<include>>
+UC10 ..> UC30 : <<include>>
+UC11 ..> UC30 : <<include>>
+UC14 ..> UC30 : <<include>>
+UC15 ..> UC30 : <<include>>
+UC29 ..> UC30 : <<include>>
+UC32 -- electroco
+UC32 -- aquaco
+UC32 -- topupnet
+UC32 -- netco
+@enduml

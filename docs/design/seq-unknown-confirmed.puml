@@ -1,0 +1,57 @@
+@startuml
+title PayLink - UNKNOWN payment later confirmed COMPLETED (UC16, US-13.3, US-14, US-26.4)
+' Names follow docs/design/glossary.md and docs/design/architecture.md.
+' Transition 7 of the brief section 2.5: UNKNOWN -> COMPLETED.
+' Only `payments` orchestrates, only `accounts` writes the ledger.
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+autonumber
+
+actor "SupportUser" as Support
+participant "ReconciliationService" as Rec
+participant "BillerAdapter" as Ad
+participant "PaymentService" as PS
+participant "WalletService" as Wal
+participant "AuditLog" as Audit
+participant "NotificationObserver" as Notif
+
+note over PS
+  Start state: payment is UNKNOWN, the hold is still ACTIVE.
+  No refund was made (UNKNOWN is never refunded automatically).
+end note
+
+alt a re-query (after 1, 5 or 15 minutes) or a callback gets CONFIRMED
+  Ad -> PS : onBillerResult(reference, CONFIRMED)
+else the settlement file lists the payment as paid (US-26.4)
+  Rec -> PS : onBillerResult(reference, CONFIRMED)
+else support confirms by hand (UC16, US-13.3)
+  Support -> PS : resolveUnknown(paymentId, CONFIRMED, actor)
+  PS -> Audit : insert(actor, "resolveUnknown", reason, refId = paymentId)
+end
+
+PS -> PS : check status is UNKNOWN (else ignore and log)
+PS -> PS : status COMPLETED, write history (UNKNOWN -> COMPLETED)
+PS -> Wal : captureHold(HoldId)
+Wal -> Wal : Hold ACTIVE -> CAPTURED
+Wal -> Wal : LedgerEntry DEBIT (held_delta = -total)
+Wal -> Wal : LedgerEntry FEE_INCOME (SYSTEM wallet, fee_amount)
+opt an agent was involved (D-10)
+  Wal -> Wal : LedgerEntry COMMISSION (agent wallet, 40% of the fee)
+  Wal -> Wal : save Commission(paymentId, agent, amount)
+end
+Wal -> Audit : insert(one row per ledger entry, refId = ledger entry id) (NFR-05)
+Wal --> PS : done
+
+PS ->> Notif : onPaymentEvent(PaymentEvent COMPLETED)
+note right of Notif
+  Customer gets the success message.
+  A failed send is retried 3 times and never changes the payment.
+end note
+
+note over PS, Wal
+  The fee of the payment was fixed when the payment was created
+  (FeeCalculator at that day), so the amounts are the same as in a
+  payment that was CONFIRMED at once (seq-pay-bill.puml).
+end note
+@enduml

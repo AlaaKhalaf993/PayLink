@@ -1,0 +1,83 @@
+@startuml
+title PayLink - Refund a completed payment (FR-27, payment stays COMPLETED)
+' Names follow docs/design/glossary.md, architecture.md (section 4.2) and class-diagram.puml.
+' Decisions: D-12 (separate RefundRequest process, payment status does not change),
+' D-13 (the fee is returned, refund = totalAmount), D-14 (agent commission is reversed,
+' PayLink absorbs the difference), D-18 (refund is paid from the SYSTEM wallet), D-17 (AuditLog is append-only).
+' No payment state changes here, so none of the 9 transitions of brief 2.5 is used and no PaymentStatusHistory is written.
+' D-13, D-14 and D-18 are marked "team to confirm" in requirements.md.
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+autonumber
+
+actor "Customer" as Cust
+actor "SupportUser" as Sup
+participant "PaymentService" as PS
+participant "WalletService" as Wal
+
+== 1. The customer asks for a refund (US-27.1, US-27.4) ==
+Cust -> PS : requestRefund(paymentId, customerId, reason)
+PS -> PS : find(paymentId)
+alt the payment is not COMPLETED, or it is not the customer's payment
+  PS --> Cust : refused, no RefundRequest is created
+  note right of PS
+    FAILED payments are refunded by the normal flow
+    (see the refund-a-failed-payment diagram).
+    UNKNOWN is never refunded.
+  end note
+else the payment already has an APPROVED RefundRequest
+  PS --> Cust : refused (a payment is paid back only once)
+else the payment is COMPLETED
+  PS -> PS : create RefundRequest status PENDING (reason, createdAt)
+  PS --> Cust : request received
+  note right of PS
+    The payment stays COMPLETED (final state).
+    No money moves yet.
+  end note
+end
+
+== 2a. Support rejects the request (US-27.3) ==
+Sup -> PS : rejectRefund(requestId, supportId, reason)
+alt the RefundRequest is not PENDING
+  PS --> Sup : refused (already decided)
+else the RefundRequest is PENDING
+  PS -> PS : RefundRequest status REJECTED\n(decisionReason, decidedAt)
+  PS -> PS : AuditLog entry (who, when, why)
+  note right of PS
+    No money moves.
+  end note
+end
+
+== 2b. Support approves the request (US-27.2) ==
+Sup -> PS : approveRefund(requestId, supportId, reason)
+alt the RefundRequest is not PENDING
+  PS --> Sup : refused (approving twice never pays twice)
+else the RefundRequest is PENDING
+  PS -> Wal : reverseCompleted(paymentId, requestId, supportId)
+  note over Wal
+    One database transaction.
+    Reads the LedgerEntries of the payment
+    (DEBIT, FEE_INCOME and, if an agent was involved, COMMISSION)
+    and posts one REVERSAL entry for each. Nothing is edited or deleted.
+  end note
+  Wal -> Wal : REVERSAL on the customer wallet\n(availableDelta = +totalAmount, fee included)
+  Wal -> Wal : REVERSAL on the SYSTEM wallet\n(returns the fee income and pays the amount the biller already kept)
+  opt the payment had an agent Commission
+    Wal -> Wal : REVERSAL on the agent wallet\n(only what the agent still has available)
+    note right of Wal
+      If the agent already spent part of it, PayLink absorbs
+      the difference (D-14). The agent wallet never goes negative.
+    end note
+  end
+  Wal -> Wal : AuditLog entry for every REVERSAL\n(who, when, why, refId = LedgerEntry id)
+  Wal --> PS : done
+  PS -> PS : RefundRequest status APPROVED\n(decisionReason, decidedAt)
+  PS -> PS : AuditLog entry (who, when, why)
+  note right of PS
+    COMPLETED is final and REFUNDED comes only from FAILED,
+    so the payment status does not change.
+  end note
+end
+@enduml
